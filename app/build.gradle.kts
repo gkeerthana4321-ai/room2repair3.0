@@ -11,23 +11,37 @@ android {
   compileSdk = 36
 
   defaultConfig {
-    applicationId = "com.room2repair.app"
+    // Different ID from the first app, so both can be installed side by side.
+    applicationId = "com.room2repair.app2"
     minSdk = 31
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.1"
+    versionCode = 4
+    versionName = "1.4"
 
     // Meta Wearables Device Access Toolkit: "0" works while Developer Mode is on in the Meta AI
     // app. For a published app, use the IDs from the Wearables Developer Center.
     manifestPlaceholders["mwdat_application_id"] = "0"
     manifestPlaceholders["mwdat_client_token"] = "0"
+    // Name under the icon, and the link Meta AI uses to come back to this app.
+    manifestPlaceholders["appLabel"] = "Room2Repair 2"
+    manifestPlaceholders["appScheme"] = "room2repair2"
+  }
+
+  // A fixed key kept in the repo, so every GitHub build is signed the same way and
+  // installs as an update over the previous one (no uninstall, data kept). Demo use only.
+  signingConfigs {
+    create("demo") {
+      storeFile = file("room2repair.keystore")
+      storePassword = "room2repair"
+      keyAlias = "room2repair"
+      keyPassword = "room2repair"
+    }
   }
 
   buildTypes {
     release {
       isMinifyEnabled = false
-      // Signed with the debug key so the file installs directly on phones (no Play Store).
-      signingConfig = signingConfigs.getByName("debug")
+      signingConfig = signingConfigs.getByName("demo")
     }
   }
   compileOptions {
