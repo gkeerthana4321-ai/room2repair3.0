@@ -1,0 +1,35 @@
+# Builds Room2Repair.apk for free on GitHub's servers — no Android Studio needed.
+# After a push (or "Run workflow" on the Actions tab), open the run and download
+# "Room2Repair-apk" at the bottom of the page.
+name: Build Room2Repair APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Name the APK
+        run: cp app/build/outputs/apk/release/app-release.apk Room2Repair.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Room2Repair-apk
+          path: Room2Repair.apk
