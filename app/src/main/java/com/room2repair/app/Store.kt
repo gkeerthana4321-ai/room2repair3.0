@@ -35,9 +35,32 @@ class Store(context: Context) {
     get() = prefs.getString("unit", "Unit 4B") ?: "Unit 4B"
     set(v) = prefs.edit().putString("unit", v.trim().ifBlank { "Unit 4B" }).apply()
 
+  /** Which free AI service to use. Groq stays the default so existing setups keep working. */
+  var provider: Provider
+    get() = Provider.entries.firstOrNull { it.id == prefs.getString("provider", Provider.GROQ.id) } ?: Provider.GROQ
+    set(v) = prefs.edit().putString("provider", v.id).apply()
+
+  fun keyFor(p: Provider): String =
+      prefs.getString(if (p == Provider.GROQ) "groqKey" else "key_${p.id}", "") ?: ""
+
+  fun setKeyFor(p: Provider, v: String) =
+      prefs.edit().putString(if (p == Provider.GROQ) "groqKey" else "key_${p.id}", v.trim()).apply()
+
+  fun modelFor(p: Provider): String {
+    val saved = prefs.getString(if (p == Provider.GROQ) "visionModel" else "model_${p.id}", p.defaultModel) ?: p.defaultModel
+    // Groq retired these models; move anyone who saved them to the current one.
+    return if (saved.isBlank() || saved in RETIRED_MODELS) p.defaultModel else saved
+  }
+
+  fun setModelFor(p: Provider, v: String) =
+      prefs.edit().putString(if (p == Provider.GROQ) "visionModel" else "model_${p.id}", v.trim().ifBlank { p.defaultModel }).apply()
+
+  /** Key and model of the provider currently selected. */
+  val apiKey: String get() = keyFor(provider)
+
   var visionModel: String
-    get() = prefs.getString("visionModel", DEFAULT_VISION_MODEL) ?: DEFAULT_VISION_MODEL
-    set(v) = prefs.edit().putString("visionModel", v.trim().ifBlank { DEFAULT_VISION_MODEL }).apply()
+    get() = modelFor(provider)
+    set(v) = setModelFor(provider, v)
 
   // ---- photos
   fun savePhoto(jpeg: ByteArray): String {
@@ -141,6 +164,28 @@ class Store(context: Context) {
           .getOrDefault(emptyList())
 
   companion object {
-    const val DEFAULT_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+    const val DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b"
+    val RETIRED_MODELS =
+        setOf("meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct")
   }
 }
+
+/** Free AI services that speak the same (OpenAI-style) chat API. */
+enum class Provider(
+    val id: String,
+    val label: String,
+    val baseUrl: String,
+    val defaultModel: String,
+    val keyHint: String,
+    val howTo: String,
+) {
+  GROQ("groq", "Groq", "https://api.groq.com/openai/v1", Store.DEFAULT_VISION_MODEL, "Groq API key (gsk_…)",
+      "console.groq.com → API Keys → Create. Free, no card. Small per-minute limit."),
+  GEMINI("gemini", "Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-flash-lite-latest", "Gemini API key (AIza…)",
+      "aistudio.google.com → Get API key → Create API key. Free, no card. Sign in with a Google account."),
+  MISTRAL("mistral", "Mistral", "https://api.mistral.ai/v1", "mistral-small-latest", "Mistral API key",
+      "console.mistral.ai → pick the free Experiment plan (phone check) → API Keys → Create. Generous limits."),
+  OPENROUTER("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "openrouter/free", "OpenRouter key (sk-or-…)",
+      "openrouter.ai → Keys → Create. Free models only: about 50 requests a day."),
+}
+

@@ -274,19 +274,13 @@ class InspectionViewModel(app: Application) : AndroidViewModel(app) {
     sayQuick("Got it.")
 
     if (_ui.value.mode == Mode.MOVE_IN) {
-      busy("Recognising the room…")
-      val room =
-          roomHint
-              ?: try {
-                ai.identifyRoom(bytes)
-              } catch (e: Exception) {
-                log("Room not recognised (${e.message}); saving anyway.")
-                "Room ${store.baselinesFor(store.unit).size + 1}"
-              }
+      busy("Saving to the move-in album…")
+      // Named by voice ("kitchen", then "take a photo") or numbered — no AI call, so the free limit is kept for inspections.
+      val room = roomHint ?: "Spot ${store.baselinesFor(store.unit).size + 1}"
       val label = store.addBaseline(store.unit, room, path)
       busy(null)
       _ui.update { it.copy(lastRoom = label, roomHint = null, stage = 2, outcome = "saved") }
-      say("Saved the move-in photo for the $label. Take the next one, or say inspection when you're done.")
+      say("Saved move-in photo: $label. Take the next one, or say inspection when you're done.")
       return
     }
     _ui.update { it.copy(roomHint = null) }
@@ -302,7 +296,7 @@ class InspectionViewModel(app: Application) : AndroidViewModel(app) {
     val unit = store.unit
     val all = store.baselinesFor(unit)
     val hinted = roomHint?.let { h -> all.filter { it.room.startsWith(h, ignoreCase = true) } }.orEmpty()
-    val candidates = (hinted + all).distinctBy { it.photo }.take(4)
+    val candidates = (hinted + all).distinctBy { it.photo }.take(1)
     val fmt = SimpleDateFormat("MMM d", Locale.US)
     val befores = candidates.mapNotNull { b -> store.readPhoto(b.photo)?.let { BeforePhoto(b.room, fmt.format(Date(b.takenAt)), it) } }
 
@@ -429,7 +423,11 @@ class InspectionViewModel(app: Application) : AndroidViewModel(app) {
   private fun modeName() = if (_ui.value.mode == Mode.MOVE_IN) "move-in" else "inspection"
 
   private fun errorLine(e: Exception) =
-      if (e is AiException) e.message ?: "AI error." else "I couldn't reach the AI. Check the internet connection and try again."
+      when {
+        e is AiException -> e.message ?: "AI error."
+        e.message == "rate limited" -> "The free AI is busy for a moment. Wait about 30 seconds and try again."
+        else -> "I couldn't reach the AI. Check the internet connection and try again."
+      }
 
   fun log(line: String) {
     val time = SimpleDateFormat("h:mm:ss", Locale.US).format(Date())

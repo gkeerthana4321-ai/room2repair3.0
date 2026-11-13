@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -158,7 +159,7 @@ private fun money(n: Int) = "$" + "%,d".format(n)
 
 private val FACTORY_STEPS =
     listOf("📸  Photo captured", "🧩  Matching move-in photo", "🔍  Spotting new damage", "📝  Writing the ticket", "💲  Pricing · Atlanta, GA", "✋  Your approval")
-private val MOVE_IN_STEPS = listOf("📸  Photo captured", "🏷️  Recognising the room", "✅  Saved to move-in album")
+private val MOVE_IN_STEPS = listOf("📸  Photo captured", "🏷️  Labelling the photo", "✅  Saved to move-in album")
 
 // ================================================================= app shell
 @Composable
@@ -174,7 +175,7 @@ fun Room2RepairApp(
     val tickets by vm.store.tickets.collectAsState()
     val registered = ui.registration == RegistrationState.REGISTERED
     var tab by rememberSaveable { mutableStateOf(-1) }
-    val current = if (tab >= 0) tab else if (registered && vm.store.groqKey.isNotBlank()) 0 else 2
+    val current = if (tab >= 0) tab else if (registered && vm.store.apiKey.isNotBlank()) 0 else 2
     val open = tickets.count { it.status != "Done" }
 
     Box(Modifier.fillMaxSize()) {
@@ -760,7 +761,9 @@ private fun share(context: Context, subject: String, text: String) {
 // ================================================================= Setup
 @Composable
 private fun SetupScreen(vm: InspectionViewModel, ui: UiState, connect: () -> Unit, disconnect: () -> Unit) {
-  var key by rememberSaveable { mutableStateOf(vm.store.groqKey) }
+  var providerId by rememberSaveable { mutableStateOf(vm.store.provider.id) }
+  val provider = Provider.entries.first { it.id == providerId }
+  var key by rememberSaveable { mutableStateOf(vm.store.apiKey) }
   var unit by rememberSaveable { mutableStateOf(vm.store.unit) }
   var model by rememberSaveable { mutableStateOf(vm.store.visionModel) }
   var saved by remember { mutableStateOf(false) }
@@ -780,8 +783,26 @@ private fun SetupScreen(vm: InspectionViewModel, ui: UiState, connect: () -> Uni
       }
     }
 
-    Step(3, "Free AI key", "console.groq.com → API Keys → Create. Free, no credit card.", done = vm.store.groqKey.isNotBlank()) {
-      OutlinedTextField(value = key, onValueChange = { key = it; saved = false }, label = { Text("Groq API key (gsk_…)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    Step(3, "Free AI key", provider.howTo, done = key.isNotBlank()) {
+      Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Provider.entries.forEach { p ->
+          FilterChip(
+              selected = p == provider,
+              onClick = {
+                // Remember what was typed for the old service, then load the new one's saved key/model.
+                vm.store.setKeyFor(provider, key)
+                vm.store.setModelFor(provider, model)
+                providerId = p.id
+                key = vm.store.keyFor(p)
+                model = vm.store.modelFor(p)
+                saved = false
+              },
+              label = { Text(p.label) },
+          )
+        }
+      }
+      OutlinedTextField(value = key, onValueChange = { key = it; saved = false }, label = { Text(provider.keyHint) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+      Text("Tip: save keys for 2+ services, or paste several keys separated by commas. When one hits its limit, the app switches to the next on its own.", fontSize = 12.sp, color = Muted)
     }
 
     Step(4, "Unit you're inspecting", "You can also say \"unit 12A\" during the walkthrough.", done = true) {
@@ -790,17 +811,18 @@ private fun SetupScreen(vm: InspectionViewModel, ui: UiState, connect: () -> Uni
 
     Box(
         Modifier.fillMaxWidth().height(54.dp).clip(RoundedCornerShape(18.dp)).background(CtaBrush).clickable {
-          vm.store.groqKey = key
+          vm.store.provider = provider
+          vm.store.setKeyFor(provider, key)
+          vm.store.setModelFor(provider, model)
           vm.setUnitNow(unit)
-          vm.store.visionModel = model
           saved = true
         },
         contentAlignment = Alignment.Center,
     ) { Text(if (saved) "Saved ✓" else "💾 Save", color = Color.White, fontWeight = FontWeight.Black, fontSize = 17.sp) }
 
     Text("Advanced", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp), color = Ink)
-    OutlinedTextField(value = model, onValueChange = { model = it; saved = false }, label = { Text("AI vision model (change only if Groq renames it)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    Text("Prices are approximate Atlanta, GA estimates. Tickets and photos stay on this phone. · Room2Repair v1.2.1", fontSize = 12.sp, color = Muted)
+    OutlinedTextField(value = model, onValueChange = { model = it; saved = false }, label = { Text("${provider.label} vision model (default: ${provider.defaultModel})") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    Text("Prices are approximate Atlanta, GA estimates. Tickets and photos stay on this phone. · Room2Repair v1.4", fontSize = 12.sp, color = Muted)
   }
 }
 

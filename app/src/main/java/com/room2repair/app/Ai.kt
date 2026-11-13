@@ -4,6 +4,7 @@ import android.util.Base64
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -58,9 +59,10 @@ class Ai(private val store: Store) {
       after: ByteArray?,
       note: String,
   ): Comparison {
-    val letters = "ABCD"
+    // Free tier is 8,000 tokens/minute and each photo costs ~2,000, so send one move-in photo + the new one.
+    val letters = "A"
     val content = JSONArray()
-    befores.take(4).forEachIndexed { i, b ->
+    befores.take(1).forEachIndexed { i, b ->
       content.put(text("MOVE-IN PHOTO ${letters[i]}: ${b.label}, taken ${b.takenAt}."))
       content.put(image(b.jpeg))
     }
@@ -70,7 +72,7 @@ class Ai(private val store: Store) {
     }
     val matchLine =
         if (befores.isEmpty()) "There are NO move-in photos for this unit. Treat any clearly visible damage in the NOW photo as new, with lower confidence."
-        else "Step 1: decide which MOVE-IN PHOTO (${letters.take(befores.size.coerceAtMost(4)).toList().joinToString("/")}) shows the same area as the NOW photo (same wall, fixture or furniture). If none matches, use null.\nStep 2: compare the NOW photo with that matched move-in photo."
+        else "MOVE-IN PHOTO A is the most likely 'before' for this spot. If it clearly shows a different area than the NOW photo, set matched_move_in to null and just report clearly visible damage; otherwise set it to \"A\" and compare the two."
     content.put(
         text(
             """
@@ -91,10 +93,10 @@ Reply with ONLY JSON:
                 .trimIndent(),
         ),
     )
-    val out = chat(content, 1400)
+    val out = chat(content, 700)
     val issues = (out.optJSONArray("issues") ?: JSONArray()).objects().map(Issue::fromAi)
     val m = out.optString("matched_move_in", "").trim().uppercase()
-    val matched = if (m.length == 1 && m[0] in letters) letters.indexOf(m[0]).takeIf { it < befores.size } else null
+    val matched = if (m.length == 1 && m[0] in letters) letters.indexOf(m[0]).takeIf { it < befores.size.coerceAtMost(1) } else null
     val room = out.optString("room", "").trim().takeIf { it.isNotBlank() && it.lowercase() != "null" }?.take(40)
     return Comparison(out.optString("summary"), issues, room, matched)
   }
@@ -109,18 +111,71 @@ Reply with ONLY JSON:
               JSONObject().put("url", "data:image/jpeg;base64," + Base64.encodeToString(jpeg, Base64.NO_WRAP)),
           )
 
-  private suspend fun chat(content: JSONArray, maxTokens: Int): JSONObject =
+  /**
+   * Calls the AI without stopping the demo: tries the selected service first, and if that key is
+   * rate-limited (or fails), moves straight on to every other saved key — several keys can be pasted
+   * into one box separated by commas. Only if every key is busy does it wait and go round once more.
+   */
+  private suspend fun chat(content: JSONArray, maxTokens: Int): JSONObject {
+    val primary = store.provider
+    val attempts =
+        (listOf(primary) + Provider.entries.filter { it != primary }).flatMap { p ->
+          store.keyFor(p).split(',', ' ', '\n', ';').map { it.trim() }.filter { it.length > 8 }.map { p to it }
+        }
+    if (attempts.isEmpty()) throw AiException("Add your free ${primary.label} key in Setup first.")
+    var wait = 40.0
+    var firstError: Exception? = null
+    var sawLimit = false
+    repeat(2) { round ->
+      for ((p, key) in attempts) {
+        try {
+          return chatOnce(p, key, content, maxTokens)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+          throw e
+        } catch (e: RateLimited) {
+          wait = minOf(wait, e.waitSeconds)
+          sawLimit = true
+        } catch (e: Exception) {
+          if (firstError == null) firstError = e
+        }
+      }
+      if (round == 0) {
+        val e = firstError
+        if (!sawLimit && e != null) throw e // nothing was just busy, so waiting won't help
+        delay((wait.coerceIn(2.0, 40.0) * 1000).toLong())
+      }
+    }
+    val err = firstError
+    if (sawLimit || err == null) throw RateLimited(wait)
+    throw err
+  }
+
+  private class RateLimited(val waitSeconds: Double) : Exception("rate limited")
+
+  private suspend fun chatOnce(p: Provider, key: String, content: JSONArray, maxTokens: Int): JSONObject =
       withContext(Dispatchers.IO) {
-        val key = store.groqKey
-        if (key.isBlank()) throw AiException("Add your free Groq key in Setup first.")
+        val model = store.modelFor(p)
         val body =
             JSONObject()
-                .put("model", store.visionModel)
+                .put("model", model)
                 .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
                 .put("temperature", 0.2)
-                .put("max_completion_tokens", maxTokens)
-                .put("response_format", JSONObject().put("type", "json_object"))
-        val conn = URL("https://api.groq.com/openai/v1/chat/completions").openConnection() as HttpURLConnection
+                .apply {
+                  when (p) {
+                    Provider.GROQ -> {
+                      put("max_completion_tokens", maxTokens)
+                      put("response_format", JSONObject().put("type", "json_object"))
+                      if (model.contains("qwen", ignoreCase = true)) put("reasoning_format", "hidden")
+                    }
+                    // OpenRouter's free router may pick a model without JSON mode, so we just ask for JSON in the prompt.
+                    Provider.OPENROUTER -> put("max_tokens", maxTokens * 2)
+                    else -> {
+                      put("max_tokens", maxTokens * 2)
+                      put("response_format", JSONObject().put("type", "json_object"))
+                    }
+                  }
+                }
+        val conn = URL(p.baseUrl + "/chat/completions").openConnection() as HttpURLConnection
         try {
           conn.requestMethod = "POST"
           conn.connectTimeout = 15_000
@@ -128,20 +183,28 @@ Reply with ONLY JSON:
           conn.doOutput = true
           conn.setRequestProperty("Authorization", "Bearer $key")
           conn.setRequestProperty("Content-Type", "application/json")
+          if (p == Provider.OPENROUTER) conn.setRequestProperty("X-Title", "Room2Repair")
           conn.outputStream.use { it.write(body.toString().toByteArray()) }
           val code = conn.responseCode
           val text = (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+          if (code == 429) {
+            val wait = conn.getHeaderField("retry-after")?.toDoubleOrNull()
+                ?: Regex("try again in ([0-9.]+)s").find(text)?.groupValues?.get(1)?.toDoubleOrNull()
+                ?: 20.0
+            throw RateLimited(wait)
+          }
           if (code !in 200..299) {
             throw AiException(
                 when (code) {
-                  401 -> "The Groq key isn't valid. Check it in Setup."
-                  429 -> "Free AI limit reached for now. Wait a minute and try again."
-                  404, 400 -> if (text.contains("model")) "The AI model name changed. Update it in Setup." else "AI request rejected ($code)."
+                  401, 403 -> "The ${p.label} key isn't valid. Check it in Setup."
+                  404 -> "The AI model isn't available. Check the model name in Setup → Advanced."
+                  400 -> if (text.contains("model_not_found") || text.contains("decommissioned") || text.contains("does not exist")) "The AI model isn't available. Check the model name in Setup → Advanced." else "AI request rejected: " + Regex("\"message\"\\s*:\\s*\"([^\"]{0,120})").find(text)?.groupValues?.get(1).orEmpty()
                   else -> "AI error $code."
                 },
             )
           }
           val msg = JSONObject(text).getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "{}")
+              .replace(Regex("<think>[\\s\\S]*?</think>"), "")
           val json = Regex("\\{[\\s\\S]*\\}").find(msg)?.value ?: msg
           JSONObject(json)
         } finally {
