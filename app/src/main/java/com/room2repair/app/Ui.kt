@@ -531,13 +531,15 @@ private fun StampedPhoto(path: String?, label: String, stamp: String?, stampColo
           modifier = Modifier.padding(8.dp).clip(RoundedCornerShape(50)).background(Ink.copy(alpha = 0.7f)).padding(horizontal = 8.dp, vertical = 3.dp),
       )
       if (stamp != null) {
-        AnimatedVisibility(visible = true, enter = scaleIn(initialScale = 2.2f) + fadeIn(), modifier = Modifier.align(Alignment.Center)) {
-          Text(
-              stamp,
-              color = stampColor, fontWeight = FontWeight.Black, fontSize = 18.sp, letterSpacing = 1.sp,
-              modifier = Modifier.rotate(-12f).border(3.dp, stampColor, RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = 0.85f), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 4.dp),
-          )
-        }
+        // Stamp "lands" on the photo: starts big and shrinks into place.
+        var landed by remember(stamp) { mutableStateOf(false) }
+        LaunchedEffect(stamp) { landed = true }
+        val k by animateFloatAsState(if (landed) 1f else 2.2f, animationSpec = tween(350), label = "stamp")
+        Text(
+            stamp,
+            color = stampColor, fontWeight = FontWeight.Black, fontSize = 18.sp, letterSpacing = 1.sp,
+            modifier = Modifier.align(Alignment.Center).scale(k).rotate(-12f).border(3.dp, stampColor, RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = 0.85f), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 4.dp),
+        )
       }
     }
     if (caption.isNotBlank()) Text(caption, fontSize = 12.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
